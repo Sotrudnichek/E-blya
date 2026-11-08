@@ -97,6 +97,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         String blockKey;        // jukebox
         List<ItemStack> before = new ArrayList<>();
         boolean paused;
+        boolean appliedPaused; // the paused state that is really in effect (changes only when it is applied)
         long lastPress;         // debounce for the Start / Stop buttons
         Inventory inv;
         @Override public Inventory getInventory() { return inv; }
@@ -542,6 +543,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         Gui g = new Gui();
         g.before = new ArrayList<>(list);
         g.paused = paused;
+        g.appliedPaused = paused;
         g.inv = Bukkit.createInventory(g, GUI_SIZE, Component.text(title));
         for (int i = 0; i < GUI_SIZE; i++)
             if (!isDiscSlot(i)) g.inv.setItem(i, uiItem(Material.GRAY_STAINED_GLASS_PANE, " ", NamedTextColor.GRAY));
@@ -725,6 +727,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
             commitJukebox(g, list);
         }
         g.before = new ArrayList<>(list);
+        g.appliedPaused = g.paused;
         refreshButtons(g);
         p.sendActionBar(start ? Component.text("Музыка включена", NamedTextColor.GREEN)
                               : Component.text("Музыка выключена", NamedTextColor.RED));
@@ -770,6 +773,10 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
 
     private void closeJukebox(Gui g, Player p, List<ItemStack> list) {
         openBlockGuis.remove(g.blockKey);
+        Block b = blockOf(g.blockKey);
+        boolean gone = b == null || b.getType() != Material.JUKEBOX;
+        // nothing was changed in the menu: do not touch the block at all (rewriting it restarts the song)
+        if (!gone && sameList(list, g.before) && g.paused == g.appliedPaused) return;
         if (!commitJukebox(g, list)) list.forEach(d -> giveBack(p, d));
     }
 
@@ -838,6 +845,9 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         if (paused) pdc.set(keyPaused, PersistentDataType.BYTE, (byte) 1); else pdc.remove(keyPaused);
         j.setRecord(front.clone());
         j.update(true, false);
+        // putting a record into a jukebox starts the song by itself: stop it, music starts only with the Start button
+        Jukebox live = (Jukebox) b.getState();
+        if (live.isPlaying()) live.stopPlaying();
         if (!paused) startFront(b, front);
     }
 
