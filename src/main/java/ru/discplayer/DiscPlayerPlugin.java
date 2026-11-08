@@ -118,6 +118,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
     private final Set<UUID> openItemGuis = new HashSet<>();
     private final Set<String> openBlockGuis = new HashSet<>();
     private final Set<String> jukeboxes = new LinkedHashSet<>();
+    private final Map<String, Long> lastStart = new HashMap<>();      // jukebox key -> when we last started a disc there
     private final Map<String, Long> customStarts = new HashMap<>();   // jukebox key -> when we started a custom disc
     private boolean dirty;
 
@@ -790,12 +791,30 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
 
     /** starts the disc that is in the jukebox: custom discs through CustomDiscs, vanilla ones normally */
     private void startFront(Block b, ItemStack front) {
+        lastStart.put(blockKey(b), System.currentTimeMillis());
         if (front.hasItemMeta()) {
             if (bridge == null) return;
             customStarts.put(blockKey(b), System.currentTimeMillis());
             bridge.play(b, front);
         } else {
-            ((Jukebox) b.getState()).startPlaying();
+            Jukebox live = (Jukebox) b.getState();
+            if (!live.isPlaying()) live.startPlaying();           // never start a second song on top of a playing one
+        }
+    }
+
+    /**
+     * A jukebox that is switched off must be silent. Putting a record into a jukebox can start the song a moment later
+     * than our own stop call, so the stop is repeated a bit later (and every second by tickJukeboxes).
+     */
+    private void keepSilent(Block b) {
+        for (long delay : new long[]{1L, 4L, 10L}) {
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (b.getType() != Material.JUKEBOX) return;
+                Jukebox j = (Jukebox) b.getState();
+                if (!j.getPersistentDataContainer().has(keyPaused, PersistentDataType.BYTE)) return;
+                if (j.isPlaying()) j.stopPlaying();
+                if (bridge != null) bridge.stop(b);
+            }, delay);
         }
     }
 
@@ -827,7 +846,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
             if (g.paused) pdc.set(keyPaused, PersistentDataType.BYTE, (byte) 1); else pdc.remove(keyPaused);
             j.update(true, false);
             Jukebox live = (Jukebox) b.getState();
-            if (g.paused) stopActive(b);
+            if (g.paused) { stopActive(b); keepSilent(b); }
             else if (!isActive(b, live)) startFront(b, front);
         } else {
             applyJukebox(b, front, rest, g.paused);
@@ -848,7 +867,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         // putting a record into a jukebox starts the song by itself: stop it, music starts only with the Start button
         Jukebox live = (Jukebox) b.getState();
         if (live.isPlaying()) live.stopPlaying();
-        if (!paused) startFront(b, front);
+        if (paused) keepSilent(b); else startFront(b, front);
     }
 
     private void tickJukeboxes() {
@@ -864,7 +883,12 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
             Jukebox j = (Jukebox) b.getState();
             PersistentDataContainer pdc = j.getPersistentDataContainer();
             if (!pdc.has(keyManaged, PersistentDataType.BYTE)) { it.remove(); dirty = true; continue; }
-            if (pdc.has(keyPaused, PersistentDataType.BYTE)) continue;     // switched off with the Stop button
+            if (pdc.has(keyPaused, PersistentDataType.BYTE)) {              // switched off: it must stay silent
+                if (j.isPlaying()) j.stopPlaying();
+                continue;
+            }
+            Long ls = lastStart.get(key);
+            if (ls != null && System.currentTimeMillis() - ls < 3000) continue;   // just started: give it time
             if (isActive(b, j)) continue;
 
             ItemStack rec = j.hasRecord() ? j.getRecord() : null;
