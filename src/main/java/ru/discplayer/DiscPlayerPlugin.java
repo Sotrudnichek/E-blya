@@ -839,7 +839,9 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         ItemStack front = list.get(0);
         List<ItemStack> rest = new ArrayList<>(list.subList(1, list.size()));
         if (jukeboxes.add(g.blockKey)) dirty = true;
-        if (same(front, oldFront)) {                           // same first disc: don't interrupt it
+        if (g.paused) {                                        // switched off: nothing may sit in the jukebox
+            applyJukebox(b, front, rest, true);
+        } else if (same(front, oldFront)) {                    // same first disc: don't interrupt it
             PersistentDataContainer pdc = j.getPersistentDataContainer();
             writeDiscs(pdc, keyQueue, rest);
             pdc.set(keyManaged, PersistentDataType.BYTE, (byte) 1);
@@ -859,6 +861,20 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         stopActive(b);                                         // the previous disc (if any) must not keep playing
         Jukebox j = (Jukebox) b.getState();
         PersistentDataContainer pdc = j.getPersistentDataContainer();
+        if (paused) {
+            // Switched off: the jukebox block itself stays EMPTY (a record inside a jukebox can start playing by itself
+            // when the block is updated). All discs wait in the queue; Start puts the first one in and plays it.
+            List<ItemStack> all = new ArrayList<>();
+            all.add(front);
+            all.addAll(rest);
+            writeDiscs(pdc, keyQueue, all);
+            pdc.set(keyManaged, PersistentDataType.BYTE, (byte) 1);
+            pdc.set(keyPaused, PersistentDataType.BYTE, (byte) 1);
+            j.setRecord(new ItemStack(Material.AIR));
+            j.update(true, false);
+            keepSilent(b);
+            return;
+        }
         writeDiscs(pdc, keyQueue, rest);
         pdc.set(keyManaged, PersistentDataType.BYTE, (byte) 1);
         if (paused) pdc.set(keyPaused, PersistentDataType.BYTE, (byte) 1); else pdc.remove(keyPaused);
