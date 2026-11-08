@@ -23,6 +23,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
@@ -31,6 +32,7 @@ import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -61,9 +63,12 @@ import java.util.stream.Collectors;
  */
 public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabExecutor {
 
-    private static final int SLOTS = 5;                 // disc slots (top row, left)
+    private static final int SLOTS = 7;                 // disc slots: 7 in the middle of the top row (slots 1..7)
+    private static final int FIRST_SLOT = 1;
     private static final int GUI_SIZE = 18;             // 2 chest rows: discs on top, buttons below
     private static final int START_SLOT = 11, STATUS_SLOT = 13, STOP_SLOT = 15;
+    private static boolean isDiscSlot(int raw) { return raw >= FIRST_SLOT && raw < FIRST_SLOT + SLOTS; }
+
     private static final String DISC_PREFIX = "MUSIC_DISC_";
     private static final String DEFAULT_NAME = "<b><#2E3192>D<#2C489E>i<#2A5FAA>s<#2876B6>c<#268DC2>P<#23A3CF>l<#21BADB>a<#1FD1E7>y<#1DE8F3>e<#1BFFFF>r</b>";
     /** a custom disc that stops sooner than this after its start is treated as 'could not start' */
@@ -92,6 +97,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         String blockKey;        // jukebox
         List<ItemStack> before = new ArrayList<>();
         boolean paused;
+        long lastPress;         // debounce for the Start / Stop buttons
         Inventory inv;
         @Override public Inventory getInventory() { return inv; }
     }
@@ -537,16 +543,16 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         g.before = new ArrayList<>(list);
         g.paused = paused;
         g.inv = Bukkit.createInventory(g, GUI_SIZE, Component.text(title));
-        for (int i = SLOTS; i < GUI_SIZE; i++)
-            g.inv.setItem(i, uiItem(Material.GRAY_STAINED_GLASS_PANE, " ", NamedTextColor.GRAY));
-        for (int i = 0; i < list.size() && i < SLOTS; i++) g.inv.setItem(i, list.get(i).clone());
+        for (int i = 0; i < GUI_SIZE; i++)
+            if (!isDiscSlot(i)) g.inv.setItem(i, uiItem(Material.GRAY_STAINED_GLASS_PANE, " ", NamedTextColor.GRAY));
+        for (int i = 0; i < list.size() && i < SLOTS; i++) g.inv.setItem(FIRST_SLOT + i, list.get(i).clone());
         refreshButtons(g);
         return g;
     }
 
     private List<ItemStack> collectDiscs(Inventory inv) {
         List<ItemStack> l = new ArrayList<>();
-        for (int i = 0; i < SLOTS; i++) {
+        for (int i = FIRST_SLOT; i < FIRST_SLOT + SLOTS; i++) {
             ItemStack it = inv.getItem(i);
             if (isDisc(it)) l.add(one(it));
         }
@@ -578,8 +584,15 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         Jukebox j = (Jukebox) b.getState();
         ItemStack rec = j.hasRecord() ? j.getRecord() : null;
         if (rec != null && rec.hasItemMeta() && !isCustom(rec)) {
-            p.sendMessage(Component.text("В проигрывателе особая пластинка. Достань её обычным ПКМ и открой меню снова.", NamedTextColor.RED));
-            return;
+            // a disc the menu cannot hold (not from CustomDiscs): hand it back, the block works only through the menu
+            giveBack(p, rec.clone());
+            stopActive(b);
+            j = (Jukebox) b.getState();
+            j.setRecord(new ItemStack(Material.AIR));
+            j.update(true, false);
+            j = (Jukebox) b.getState();
+            rec = null;
+            p.sendMessage(Component.text("В проигрывателе была особая пластинка, она возвращена тебе в инвентарь.", NamedTextColor.YELLOW));
         }
         PersistentDataContainer pdc = j.getPersistentDataContainer();
         List<ItemStack> list = new ArrayList<>();
@@ -593,21 +606,24 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         p.openInventory(g.inv);
     }
 
-    @EventHandler
+    /**
+     * A jukebox works only through the menu: any right click on it (sneaking or not, whatever is in the hand)
+     * opens the menu and the vanilla insert/eject is cancelled.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent e) {
-        if (e.getHand() != EquipmentSlot.HAND) return;
         Action a = e.getAction();
         Player p = e.getPlayer();
 
         if (a == Action.RIGHT_CLICK_BLOCK) {
             Block b = e.getClickedBlock();
-            if (b != null && b.getType() == Material.JUKEBOX && p.isSneaking()) {
-                if (e.useInteractedBlock() == Event.Result.DENY) return;      // protected area
+            if (b != null && b.getType() == Material.JUKEBOX) {
                 e.setCancelled(true);
-                openJukebox(p, b);
+                if (e.getHand() == EquipmentSlot.HAND) openJukebox(p, b);
                 return;
             }
         }
+        if (e.getHand() != EquipmentSlot.HAND) return;
         if (a == Action.RIGHT_CLICK_AIR || a == Action.RIGHT_CLICK_BLOCK) {
             ItemStack it = e.getItem();
             if (isPortable(it)) {
@@ -615,6 +631,13 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
                 openPortable(p, it);
             }
         }
+    }
+
+    /** hoppers, droppers and redstone may not put discs into a jukebox or take them out */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onMove(InventoryMoveItemEvent e) {
+        if (e.getSource().getType() == InventoryType.JUKEBOX || e.getDestination().getType() == InventoryType.JUKEBOX)
+            e.setCancelled(true);
     }
 
     @EventHandler
@@ -633,7 +656,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         boolean inTop = raw >= 0 && raw < top.getSize();
         ClickType c = e.getClick();
 
-        if (inTop && raw >= SLOTS) {                       // buttons and decoration are never movable
+        if (inTop && !isDiscSlot(raw)) {                       // buttons and decoration are never movable
             e.setCancelled(true);
             if (raw == START_SLOT) pressButton(g, p, true);
             else if (raw == STOP_SLOT) pressButton(g, p, false);
@@ -657,19 +680,35 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
     public void onDrag(InventoryDragEvent e) {
         Inventory top = e.getView().getTopInventory();
         if (!(top.getHolder() instanceof Gui)) return;
-        boolean touchesUi = e.getRawSlots().stream().anyMatch(s -> s >= SLOTS && s < top.getSize());
+        boolean touchesUi = e.getRawSlots().stream().anyMatch(s -> s < top.getSize() && !isDiscSlot(s));
         boolean touchesTop = e.getRawSlots().stream().anyMatch(s -> s < top.getSize());
         if (touchesUi || (touchesTop && !isDisc(e.getOldCursor()))) e.setCancelled(true);
     }
 
+    private static boolean sameList(List<ItemStack> a, List<ItemStack> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) if (!same(a.get(i), b.get(i))) return false;
+        return true;
+    }
+
     /** Start / Stop button */
     private void pressButton(Gui g, Player p, boolean start) {
+        long now = System.currentTimeMillis();
+        if (now - g.lastPress < 400) return;                   // clicking like crazy must not restart the music over and over
+        g.lastPress = now;
+
         List<ItemStack> list = collectDiscs(g.inv);
         if (start && list.isEmpty()) {
             p.sendActionBar(Component.text("Сначала положи пластинки", NamedTextColor.RED));
             return;
         }
-        g.paused = !start;
+        boolean wantPaused = !start;
+        if (wantPaused == g.paused && sameList(list, g.before)) {   // nothing to change: already in this state
+            p.sendActionBar(start ? Component.text("Уже играет", NamedTextColor.GREEN)
+                                  : Component.text("Уже остановлено", NamedTextColor.RED));
+            return;
+        }
+        g.paused = wantPaused;
         if (g.itemId != null) {
             int idx = findPortable(p, g.itemId);
             if (idx >= 0) {
@@ -685,6 +724,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         } else {
             commitJukebox(g, list);
         }
+        g.before = new ArrayList<>(list);
         refreshButtons(g);
         p.sendActionBar(start ? Component.text("Музыка включена", NamedTextColor.GREEN)
                               : Component.text("Музыка выключена", NamedTextColor.RED));
@@ -696,7 +736,7 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
         if (!(e.getPlayer() instanceof Player p)) return;
 
         List<ItemStack> list = new ArrayList<>();
-        for (int i = 0; i < SLOTS; i++) {
+        for (int i = FIRST_SLOT; i < FIRST_SLOT + SLOTS; i++) {
             ItemStack it = e.getInventory().getItem(i);
             if (it == null || it.getType().isAir()) continue;
             if (isDisc(it)) list.add(one(it));

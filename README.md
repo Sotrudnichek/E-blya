@@ -1,8 +1,9 @@
 # DiscPlayer (Paper / Leaf 26.1.2, Java 25)
 
 - `/discplayer give [player]` gives the **portable player**. Right click (in the air or on a block) opens the menu.
-- **Shift + right click** on a jukebox opens the same menu for the placed jukebox.
-- Menu (2 chest rows): 5 disc slots on the top row, below them **Start** (green), **Stop** (red) and a status icon.
+- **Right click** on a placed jukebox (sneaking or not, any item in hand) opens the same menu. A jukebox works only
+  through the menu: vanilla insert/eject, hoppers and CustomDiscs' own insert/eject are blocked.
+- Menu (2 chest rows): 7 disc slots in the middle of the top row, below them **Start** (green), **Stop** (red) and a status icon.
 - Discs play in slot order, forever: a finished disc goes to the end of the queue. Music only starts with **Start**;
   **Stop** switches it off, the next **Start** begins from the first disc.
 

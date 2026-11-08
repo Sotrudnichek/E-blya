@@ -6,6 +6,10 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Cancellable;
+import org.bukkit.event.Event;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
 
@@ -62,10 +66,28 @@ final class CustomDiscsBridge {
         Plugin cd = Bukkit.getPluginManager().getPlugin("CustomDiscs");
         if (cd == null || !cd.isEnabled()) return null;
         try {
-            return new CustomDiscsBridge(owner, cd);
+            CustomDiscsBridge b = new CustomDiscsBridge(owner, cd);
+            b.blockCustomDiscsOwnInsertEject(owner);
+            return b;
         } catch (Throwable t) {
             owner.getLogger().warning("CustomDiscs found, but its API could not be used (custom discs disabled): " + t);
             return null;
+        }
+    }
+
+    /**
+     * CustomDiscs starts and stops music by itself when a player (or a hopper) puts a disc into / takes it out of a
+     * jukebox. DiscPlayer owns the jukebox menu, so these two events are cancelled: otherwise the music would play twice.
+     * Our own playback (PlayUtil.play) does not go through these events.
+     */
+    @SuppressWarnings("unchecked")
+    private void blockCustomDiscsOwnInsertEject(Plugin owner) throws Exception {
+        Listener dummy = new Listener() { };
+        for (String name : new String[]{"CustomDiscInsertEvent", "CustomDiscEjectEvent"}) {
+            Class<? extends Event> type = (Class<? extends Event>) cl.loadClass("space.subkek.customdiscs.api.event." + name);
+            Bukkit.getPluginManager().registerEvent(type, dummy, EventPriority.LOWEST, (listener, event) -> {
+                if (event instanceof Cancellable c) c.setCancelled(true);
+            }, owner);
         }
     }
 
