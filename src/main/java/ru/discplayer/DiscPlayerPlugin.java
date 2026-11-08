@@ -784,6 +784,13 @@ public final class DiscPlayerPlugin extends JavaPlugin implements Listener, TabE
     /** stops whatever plays in the jukebox (vanilla song and/or CustomDiscs stream) */
     private void stopActive(Block b) {
         Jukebox live = (Jukebox) b.getState();
+        // the block-side stop does not always reach the clients: stop the song sound for everyone nearby explicitly,
+        // otherwise Stop looks like it does nothing and the next Start plays on top of the old song
+        if (live.hasRecord() && live.getRecord().getType().isRecord()) {
+            Key k = Key.key("minecraft", "music_disc." + songName(live.getRecord().getType()));
+            for (Player q : b.getWorld().getPlayers())
+                if (q.getLocation().distanceSquared(b.getLocation()) < 96 * 96) q.stopSound(SoundStop.named(k));
+        }
         if (live.isPlaying()) live.stopPlaying();
         if (bridge != null) bridge.stop(b);
         customStarts.remove(blockKey(b));
